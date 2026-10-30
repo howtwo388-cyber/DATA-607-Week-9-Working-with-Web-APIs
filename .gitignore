@@ -1,0 +1,13 @@
+.DS_Store
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+.quarto/
+*_files/
+*.approach-backup-*.qmd
+*.backup-*.qmd
+*.pre-final-edits-*.qmd
+.Renviron
+.env
+*.key
