@@ -1,0 +1,273 @@
+---
+title: "DATA 607 — Week 9: Working with Web APIs"
+subtitle: "Assignment Approach: Analyzing Bestselling Books Using the New York Times API"
+author: "Patricio Romero"
+date: "2026-10-29"
+format:
+  html:
+    toc: true
+    number-sections: true
+    code-fold: true
+    code-summary: "Show code"
+    embed-resources: true
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+## 1. Project Overview
+
+The goal of this assignment is to practice collecting data from a web API and organizing it with R. I selected the New York Times Books API to explore the Hardcover Fiction bestseller list.
+
+I have already downloaded a sample of 15 books and stored the results in JSON, CSV, and SQLite formats. This **Approach** shows the data source, loading process, database structure, basic cleaning checks, and a small preliminary review. The full exploratory analysis will be completed in the Code Base.
+
+## 2. Research Questions
+
+I will investigate these questions:
+
+1.  What are the top five bestselling hardcover fiction books, and what is each book's rank?
+2.  Which authors appear on the bestseller list?
+3.  How many weeks have the top five books been on the list?
+
+The bestseller **rank** is the book's position on this list. It is not a measure of the number of copies sold.
+
+## 3. Data Source and API Endpoint
+
+**Source:** [New York Times Books API](https://developer.nytimes.com/docs/books-product/1/overview)
+
+**Endpoint:**
+
+`https://api.nytimes.com/svc/books/v3/lists/current/hardcover-fiction.json`
+
+- HTTP method: `GET`
+- Query parameter: `api-key`
+- Response format: JSON
+- Selected list: Hardcover Fiction
+- Authentication: API key stored privately as `NYT_API_KEY` in `~/.Renviron`
+
+The endpoint returns the latest available list. The saved sample used in this Approach has a **print publication date of November 8, 2026**. The print date can be later than the web release date. Results may change when the API is called again.
+
+## 4. API Connection and JSON Download
+
+I created an API application and saved my key in an R environment variable. The actual request is performed in `fetch_nyt_books.R`, which saves the original JSON and creates the cleaned CSV and SQLite records.
+
+The following is the main request code. It is shown for documentation and is **not re-run during rendering**, so this report uses the same saved sample each time.
+
+```{r api-request-example, eval=FALSE}
+library(httr)
+library(jsonlite)
+
+api_key <- Sys.getenv("NYT_API_KEY")
+stopifnot(nzchar(api_key))
+
+endpoint <- paste0(
+  "https://api.nytimes.com/svc/books/v3/",
+  "lists/current/hardcover-fiction.json"
+)
+
+response <- httr::GET(
+  endpoint,
+  query = list("api-key" = api_key),
+  httr::timeout(30)
+)
+httr::stop_for_status(response)
+
+raw_json <- httr::content(
+  response,
+  as = "text",
+  encoding = "UTF-8"
+)
+
+# The complete fetch_nyt_books.R script validates the response,
+# loads SQLite, and saves the original JSON and tidy CSV.
+```
+
+The original response is saved as `data/nyt_hardcover_fiction_raw.json`. I do not include my API key or secret in the submission.
+
+## 5. Load JSON, Create the Database, and Verify the Tables
+
+I used `jsonlite` to load the downloaded JSON file. Then I used `DBI` and `RSQLite` to create a local database and verify the data. The SQL statements below create the tables if necessary; existing records are not deleted.
+
+```{r load-data}
+library(jsonlite)
+library(dplyr)
+library(DBI)
+library(RSQLite)
+library(knitr)
+
+nyt_json <- jsonlite::fromJSON(
+  "data/nyt_hardcover_fiction_raw.json",
+  simplifyVector = FALSE
+)
+json_books <- nyt_json$results$books
+
+data.frame(
+  List = as.character(nyt_json$results$list_name),
+  Print_Date = as.character(nyt_json$results$published_date),
+  Books = length(json_books)
+) |>
+  knitr::kable(caption = "Books Downloaded from JSON")
+```
+
+This is how the two database tables are created in the actual project:
+
+```{r create-database}
+con <- DBI::dbConnect(
+  RSQLite::SQLite(), "data/nyt_books.sqlite"
+)
+DBI::dbExecute(con, "CREATE TABLE IF NOT EXISTS bestseller_books (
+  list_name TEXT NOT NULL,
+  published_date TEXT NOT NULL,
+  rank INTEGER NOT NULL,
+  rank_last_week INTEGER,
+  weeks_on_list INTEGER,
+  title TEXT NOT NULL,
+  author TEXT,
+  publisher TEXT,
+  primary_isbn13 TEXT,
+  fetched_at_utc TEXT NOT NULL,
+  PRIMARY KEY (list_name, published_date, rank)
+)")
+DBI::dbExecute(con, "CREATE TABLE IF NOT EXISTS download_log (
+  fetched_at_utc TEXT PRIMARY KEY,
+  endpoint TEXT NOT NULL,
+  list_name TEXT NOT NULL,
+  published_date TEXT,
+  records INTEGER NOT NULL
+)")
+knitr::kable(
+  data.frame(Table = DBI::dbListTables(con)),
+  caption = "Database Tables"
+)
+```
+
+The downloader `fetch_nyt_books.R` already inserted the downloaded records. The query below shows them directly from SQLite:
+
+```{r verify-database}
+database_books <- DBI::dbGetQuery(
+  con,
+  "SELECT list_name, published_date, rank, title, author,
+          weeks_on_list, rank_last_week, publisher
+   FROM bestseller_books
+   ORDER BY rank"
+)
+database_count <- nrow(database_books)
+json_count <- length(json_books)
+
+knitr::kable(
+  data.frame(Source = c("JSON response", "SQLite database"),
+             Records = c(json_count, database_count)),
+  caption = "JSON and SQLite Record Counts"
+)
+knitr::kable(
+  head(database_books[, c("rank", "title", "author", "weeks_on_list")]),
+  caption = "First Six Records Loaded in SQLite"
+)
+DBI::dbDisconnect(con)
+```
+
+## 6. Data Cleaning and Quality Review
+
+The API returns nested JSON. I converted selected fields into a tidy data frame. Each row represents one book, with columns for rank, title, author, and weeks on the list.
+
+```{r cleaning}
+get_text <- function(x) {
+  if (is.null(x) || length(x) == 0) {
+    return(NA_character_)
+  }
+  as.character(x[[1]])
+}
+
+get_number <- function(x) {
+  suppressWarnings(as.integer(get_text(x)))
+}
+
+books_clean <- dplyr::bind_rows(
+  lapply(json_books, function(book) {
+    data.frame(
+      rank = get_number(book$rank),
+      title = get_text(book$title),
+      author = get_text(book$author),
+      weeks_on_list = get_number(book$weeks_on_list),
+      rank_last_week = get_number(book$rank_last_week),
+      stringsAsFactors = FALSE
+    )
+  })
+) |>
+  dplyr::arrange(rank)
+
+quality_check <- data.frame(
+  Check = c("Books", "Missing cells", "Duplicate ranks",
+            "Invalid ranks", "Negative weeks",
+            "JSON / database row counts match"),
+  Result = c(
+    nrow(books_clean),
+    sum(is.na(books_clean)),
+    sum(duplicated(books_clean$rank)),
+    sum(is.na(books_clean$rank) | books_clean$rank < 1),
+    sum(books_clean$weeks_on_list < 0, na.rm = TRUE),
+    as.character(nrow(books_clean) == database_count)
+  )
+)
+
+knitr::kable(quality_check, caption = "Preliminary Data Quality Checks")
+```
+
+I checked missing values, duplicate ranks, invalid ranks, and negative week counts. I will explain any issues found before the final analysis. The field `rank_last_week` can require special attention because a new book may not have a previous-week rank.
+
+## 7. Preliminary Answers to the Research Questions
+
+This is a **small first look**, not the final analysis. The full Code Base will include more interpretation and any additional charts.
+
+**Question 1: What are the top five books and their rankings?**
+
+```{r top-five}
+top_five <- books_clean |>
+  dplyr::arrange(rank) |>
+  dplyr::slice_head(n = 5) |>
+  dplyr::select(rank, title, author, weeks_on_list)
+
+knitr::kable(
+  top_five,
+  caption = "Five Highest-Ranked Books (Saved API Sample)"
+)
+```
+
+**Question 2: Which authors appear on the list?**
+
+```{r authors-preview}
+author_counts <- books_clean |>
+  dplyr::count(author, name = "books_on_list", sort = TRUE)
+
+knitr::kable(
+  author_counts,
+  caption = "Authors and Number of Books on the List"
+)
+```
+
+**Question 3: How many weeks have the top books been on the list?**
+
+The `weeks_on_list` column in the table above answers this question. A higher number means that the book has appeared on the list for more weeks; it does not measure total sales.
+
+## 8. Plan for the Code Base
+
+The Approach is complete after establishing the data source, real API download, saved JSON, relational storage, cleaning steps, validation, and preliminary answers.
+
+For the **final Code Base**, I will:
+
+- Extend the exploratory analysis and explain the findings.
+- Add clear tables and visualizations where useful.
+- Explain any data limitations and the meaning of bestseller rank.
+- Submit the reproducible Quarto source, the saved JSON and CSV, the API download script, and the rendered HTML.
+
+The final conclusions will be written after the analysis is completed.
+
+
+## AI Use
+
+ChatGPT was used to help understand the Week 9 assignment requirements, organize the project approach, and improve the English writing.
+
+It also provided guidance on connecting to the New York Times Books API, reading JSON data in R, creating the SQLite database, and checking the data for missing values and duplicates.
+
+I reviewed the R code, API response, database structure, and preliminary results. The project uses real data from the New York Times Books API.
