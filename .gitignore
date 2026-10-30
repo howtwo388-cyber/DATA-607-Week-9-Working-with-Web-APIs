@@ -11,3 +11,7 @@
 .Renviron
 .env
 *.key
+
+# RPubs publishing metadata and alternate rendered Markdown
+rsconnect/
+*.md
