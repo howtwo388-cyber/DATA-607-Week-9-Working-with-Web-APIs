@@ -1,0 +1,20 @@
+
+/* Justify report paragraphs */
+#quarto-document-content p {
+  text-align: justify;
+  text-justify: inter-word;
+  line-height: 1.7;
+}
+
+/* Keep headings left-aligned */
+#quarto-document-content h1,
+#quarto-document-content h2,
+#quarto-document-content h3 {
+  text-align: left;
+}
+
+/* Keep tables and code normally aligned */
+#quarto-document-content table,
+#quarto-document-content pre {
+  text-align: left;
+}

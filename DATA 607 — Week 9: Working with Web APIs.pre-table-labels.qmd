@@ -263,7 +263,6 @@ For the **final Code Base**, I will:
 
 The final conclusions will be written after the analysis is completed.
 
-
 ## AI Use
 
 ChatGPT was used to help understand the Week 9 assignment requirements, organize the project approach, and improve the English writing.

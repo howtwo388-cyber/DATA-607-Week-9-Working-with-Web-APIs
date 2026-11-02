@@ -2,27 +2,27 @@
 title: "DATA 607 — Week 9: Working with Web APIs"
 subtitle: "Assignment Approach: Analyzing Bestselling Books Using the New York Times API"
 author: "Patricio Romero"
-date: "2026-10-29"
+date: "today"
 format:
   html:
     toc: true
     number-sections: true
     code-fold: true
-    code-summary: "Show code"
     embed-resources: true
+    css: styles.css
 execute:
   echo: true
   warning: false
   message: false
 ---
 
-## 1. Project Overview
+## Project Overview
 
 The goal of this assignment is to practice collecting data from a web API and organizing it with R. I selected the New York Times Books API to explore the Hardcover Fiction bestseller list.
 
-I have already downloaded a sample of 15 books and stored the results in JSON, CSV, and SQLite formats. This **Approach** shows the data source, loading process, database structure, basic cleaning checks, and a small preliminary review. The full exploratory analysis will be completed in the Code Base.
+I downloaded a sample of 15 books and saved the results in JSON, CSV, and SQLite formats. This project explains the API connection, data collection, database structure, cleaning process, and data validation. It also includes an analysis of bestseller rankings, authors, weeks on the list, and ranking changes.
 
-## 2. Research Questions
+## Research Questions
 
 I will investigate these questions:
 
@@ -32,7 +32,7 @@ I will investigate these questions:
 
 The bestseller **rank** is the book's position on this list. It is not a measure of the number of copies sold.
 
-## 3. Data Source and API Endpoint
+## Data Source and API Endpoint
 
 **Source:** [New York Times Books API](https://developer.nytimes.com/docs/books-product/1/overview)
 
@@ -48,7 +48,7 @@ The bestseller **rank** is the book's position on this list. It is not a measure
 
 The endpoint returns the latest available list. The saved sample used in this Approach has a **print publication date of November 8, 2026**. The print date can be later than the web release date. Results may change when the API is called again.
 
-## 4. API Connection and JSON Download
+## API Connection and JSON Download
 
 I created an API application and saved my key in an R environment variable. The actual request is performed in `fetch_nyt_books.R`, which saves the original JSON and creates the cleaned CSV and SQLite records.
 
@@ -85,7 +85,7 @@ raw_json <- httr::content(
 
 The original response is saved as `data/nyt_hardcover_fiction_raw.json`. I do not include my API key or secret in the submission.
 
-## 5. Load JSON, Create the Database, and Verify the Tables
+## Load JSON, Create the Database, and Verify the Tables
 
 I used `jsonlite` to load the downloaded JSON file. Then I used `DBI` and `RSQLite` to create a local database and verify the data. The SQL statements below create the tables if necessary; existing records are not deleted.
 
@@ -107,7 +107,7 @@ data.frame(
   Print_Date = as.character(nyt_json$results$published_date),
   Books = length(json_books)
 ) |>
-  knitr::kable(caption = "Books Downloaded from JSON")
+  knitr::kable(caption = "NYT Hardcover Fiction: API Response Summary", col.names = c("Bestseller List", "Publication Date", "Number of Books"))
 ```
 
 This is how the two database tables are created in the actual project:
@@ -137,37 +137,56 @@ DBI::dbExecute(con, "CREATE TABLE IF NOT EXISTS download_log (
   records INTEGER NOT NULL
 )")
 knitr::kable(
-  data.frame(Table = DBI::dbListTables(con)),
-  caption = "Database Tables"
+  data.frame(
+    Table_Name = c("bestseller_books", "download_log"),
+    Description = c("Stores the books, authors, ranks, and weeks on the list",
+                    "Records when the API data was downloaded")
+  ),
+  col.names = c("Database Table", "Purpose"),
+  caption = "SQLite Database Structure",
+  row.names = FALSE
 )
 ```
 
 The downloader `fetch_nyt_books.R` already inserted the downloaded records. The query below shows them directly from SQLite:
 
 ```{r verify-database}
+# Get the publication date and list name from JSON
+sample_date <- as.character(nyt_json$results$published_date)
+sample_list <- as.character(nyt_json$results$list_name)
+
+# Import records for the selected list and date
 database_books <- DBI::dbGetQuery(
   con,
   "SELECT list_name, published_date, rank, title, author,
           weeks_on_list, rank_last_week, publisher
    FROM bestseller_books
-   ORDER BY rank"
+   WHERE published_date = ?
+   AND list_name = ?
+   ORDER BY rank",
+  params = list(sample_date, sample_list)
 )
+
 database_count <- nrow(database_books)
 json_count <- length(json_books)
 
 knitr::kable(
   data.frame(Source = c("JSON response", "SQLite database"),
              Records = c(json_count, database_count)),
-  caption = "JSON and SQLite Record Counts"
+  col.names = c("Data Source", "Number of Books"),
+  caption = "Record Count Validation: JSON vs. SQLite",
+  row.names = FALSE
 )
 knitr::kable(
   head(database_books[, c("rank", "title", "author", "weeks_on_list")]),
-  caption = "First Six Records Loaded in SQLite"
+  col.names = c("Bestseller Rank", "Book Title", "Author(s)", "Weeks on List"),
+  caption = "First Six Books Stored in SQLite",
+  row.names = FALSE
 )
 DBI::dbDisconnect(con)
 ```
 
-## 6. Data Cleaning and Quality Review
+## Data Cleaning and Quality Review
 
 The API returns nested JSON. I converted selected fields into a tidy data frame. Each row represents one book, with columns for rank, title, author, and weeks on the list.
 
@@ -198,27 +217,44 @@ books_clean <- dplyr::bind_rows(
   dplyr::arrange(rank)
 
 quality_check <- data.frame(
-  Check = c("Books", "Missing cells", "Duplicate ranks",
-            "Invalid ranks", "Negative weeks",
-            "JSON / database row counts match"),
+  Check = c(
+    "Total Books",
+    "Missing Values",
+    "Empty Titles",
+    "Empty Authors",
+    "Duplicate Ranks",
+    "Invalid Ranks",
+    "Negative Week Counts",
+    "JSON and SQLite Counts Match"
+  ),
   Result = c(
     nrow(books_clean),
     sum(is.na(books_clean)),
+    sum(!is.na(books_clean$title) &
+          trimws(books_clean$title) == ""),
+    sum(!is.na(books_clean$author) &
+          trimws(books_clean$author) == ""),
     sum(duplicated(books_clean$rank)),
-    sum(is.na(books_clean$rank) | books_clean$rank < 1),
+    sum(is.na(books_clean$rank) |
+          books_clean$rank < 1),
     sum(books_clean$weeks_on_list < 0, na.rm = TRUE),
     as.character(nrow(books_clean) == database_count)
   )
 )
 
-knitr::kable(quality_check, caption = "Preliminary Data Quality Checks")
+knitr::kable(
+  quality_check,
+  col.names = c("Validation Check", "Result"),
+  caption = "Data Cleaning and Quality Review",
+  row.names = FALSE
+)
 ```
 
-I checked missing values, duplicate ranks, invalid ranks, and negative week counts. I will explain any issues found before the final analysis. The field `rank_last_week` can require special attention because a new book may not have a previous-week rank.
+I checked missing values, duplicate ranks, invalid ranks, and negative week counts. I checked missing values, duplicate ranks, invalid ranks, and negative week counts. These checks help identify possible data quality issues. The rank_last_week field may be missing or equal to zero when a book was not ranked on the previous list.
 
-## 7. Preliminary Answers to the Research Questions
+## Preliminary Answers to the Research Questions
 
-This is a **small first look**, not the final analysis. The full Code Base will include more interpretation and any additional charts.
+This is a **small first look**, not the final analysis. This section provides an initial review of the data. The Code Base below includes additional analysis, visualizations, and interpretations.
 
 **Question 1: What are the top five books and their rankings?**
 
@@ -230,7 +266,9 @@ top_five <- books_clean |>
 
 knitr::kable(
   top_five,
-  caption = "Five Highest-Ranked Books (Saved API Sample)"
+  col.names = c("Bestseller Rank", "Book Title", "Author(s)", "Weeks on List"),
+  caption = "Top Five NYT Hardcover Fiction Bestsellers",
+  row.names = FALSE
 )
 ```
 
@@ -242,7 +280,9 @@ author_counts <- books_clean |>
 
 knitr::kable(
   author_counts,
-  caption = "Authors and Number of Books on the List"
+  col.names = c("Author(s)", "Number of Books"),
+  caption = "Authors Represented on the Bestseller List",
+  row.names = FALSE
 )
 ```
 
@@ -250,19 +290,403 @@ knitr::kable(
 
 The `weeks_on_list` column in the table above answers this question. A higher number means that the book has appeared on the list for more weeks; it does not measure total sales.
 
-## 8. Plan for the Code Base
+## Code Base Development
 
-The Approach is complete after establishing the data source, real API download, saved JSON, relational storage, cleaning steps, validation, and preliminary answers.
+After completing the initial Approach, I extended the project with additional analysis.
 
-For the **final Code Base**, I will:
+The Code Base includes:
 
-- Extend the exploratory analysis and explain the findings.
-- Add clear tables and visualizations where useful.
-- Explain any data limitations and the meaning of bestseller rank.
-- Submit the reproducible Quarto source, the saved JSON and CSV, the API download script, and the rendered HTML.
+- Importing the saved JSON and SQLite data.
+- Checking missing values and duplicate records.
+- Identifying the five highest-ranked books.
+- Counting books by author.
+- Creating a chart of weeks on the bestseller list.
+- Comparing current and previous-week rankings.
+- Discussing the findings and data limitations.
 
-The final conclusions will be written after the analysis is completed.
+The analysis uses the saved API data to keep the results consistent and reproducible.
 
+## Import Data — Code Base
+
+```{r import-codebase}
+library(jsonlite)
+library(dplyr)
+library(DBI)
+library(RSQLite)
+library(knitr)
+library(ggplot2)
+
+# Import the original JSON file
+nyt_data <- jsonlite::fromJSON(
+  "data/nyt_hardcover_fiction_raw.json",
+  simplifyVector = FALSE
+)
+
+# Connect to SQLite
+con <- dbConnect(
+  SQLite(),
+  "data/nyt_books.sqlite"
+)
+
+# Import book records from SQLite
+books <- DBI::dbGetQuery(
+  con,
+  "SELECT *
+   FROM bestseller_books
+   WHERE published_date = ?
+   AND list_name = ?
+   ORDER BY rank",
+  params = list(
+    as.character(nyt_data$results$published_date),
+    as.character(nyt_data$results$list_name)
+  )
+)
+
+dbDisconnect(con)
+
+# Display the number of records
+cat("Total books:", nrow(books), "\n")
+
+# Display the first five books
+knitr::kable(
+  head(books[, c("rank", "title", "author", "weeks_on_list")], 5),
+  col.names = c(
+    "Rank",
+    "Book Title",
+    "Author(s)",
+    "Weeks on List"
+  ),
+  caption = "Books Imported from SQLite",
+  row.names = FALSE
+)
+```
+
+### Interpretation
+
+The JSON file and SQLite database contain 15 books from the New York Times Hardcover Fiction bestseller list.
+
+I successfully imported the data into R. Each row represents one book, and the columns provide information about its ranking, title, author, and weeks on the bestseller list.
+
+The imported data will be used for cleaning, validation, and further analysis.
+
+### Data Cleaning and Validation
+
+In this section, I check the imported data for missing values, duplicate records, and invalid rankings.
+
+```{r codebase-validation}
+# Check missing values
+missing_summary <- data.frame(
+  Variable = names(books),
+  Missing_Values = colSums(is.na(books))
+)
+
+knitr::kable(
+  missing_summary,
+  col.names = c("Variable", "Missing Values"),
+  caption = "Missing Values by Variable",
+  row.names = FALSE
+)
+
+# Check duplicate records
+duplicate_count <- sum(
+  duplicated(books[, c("list_name", "published_date", "rank")])
+)
+
+# Check invalid values
+validation_summary <- data.frame(
+  Check = c(
+    "Total Books",
+    "Duplicate Records",
+    "Invalid Rankings",
+    "Negative Week Counts",
+    "JSON and SQLite Records Match"
+  ),
+  Result = c(
+    nrow(books),
+    duplicate_count,
+    sum(is.na(books$rank) | books$rank < 1),
+    sum(books$weeks_on_list < 0, na.rm = TRUE),
+    as.character(
+      length(nyt_data$results$books) == nrow(books)
+    )
+  )
+)
+
+knitr::kable(
+  validation_summary,
+  col.names = c("Validation Check", "Result"),
+  caption = "Data Validation Summary",
+  row.names = FALSE
+)
+```
+
+### Interpretation
+
+I checked the dataset for missing values, duplicate records, and invalid rankings. I also compared the number of records in JSON and SQLite.
+
+These checks help verify that the data is ready for analysis.
+
+## Top Five Bestselling Books
+
+The first research question is: **What are the top five bestselling hardcover fiction books?**
+
+I used the current ranking to identify the five highest-ranked books. Rank 1 represents the highest position on the list.
+
+```{r codebase-top-five}
+top_five_analysis <- books %>%
+  arrange(rank) %>%
+  slice_head(n = 5) %>%
+  select(rank, title, author, weeks_on_list)
+
+knitr::kable(
+  top_five_analysis,
+  col.names = c(
+    "Bestseller Rank",
+    "Book Title",
+    "Author(s)",
+    "Weeks on List"
+  ),
+  caption = "Top Five NYT Hardcover Fiction Bestsellers",
+  row.names = FALSE
+)
+```
+
+### Interpretation
+
+The table shows the five highest-ranked books in the saved New York Times Hardcover Fiction bestseller list.
+
+"Threshing Day" by Rebecca Yarros is ranked first and has been on the list for four weeks. The next four books have each been on the list for one week.
+
+The rankings represent positions on the list, not the number of books sold.
+
+## Author Analysis
+
+The second research question is: **Which authors appear on the bestseller list?**
+
+I counted how many books each author has on the list.
+
+```{r codebase-author-analysis}
+author_analysis <- books %>%
+  count(author, name = "number_of_books", sort = TRUE)
+
+knitr::kable(
+  author_analysis,
+  col.names = c(
+    "Author(s)",
+    "Number of Books"
+  ),
+  caption = "Authors on the Bestseller List",
+  row.names = FALSE
+)
+```
+
+### Interpretation
+
+The dataset includes books written by different authors.
+
+Matt Dinniman appears twice on the bestseller list, while the other author entries appear once. This shows that one author can have more than one book on the list.
+
+## Weeks on the Bestseller List
+
+The third research question is: **How many weeks have the top books been on the bestseller list?**
+
+I created a bar chart to compare how long the five highest-ranked books have remained on the list.
+
+```{r codebase-weeks-chart}
+library(ggplot2)
+library(dplyr)
+
+# Prepare the data
+chart_data <- top_five_analysis %>%
+  arrange(weeks_on_list) %>%
+  mutate(
+    title = factor(title, levels = title)
+  )
+
+# Create the chart
+ggplot(
+  chart_data,
+  aes(
+    x = title,
+    y = weeks_on_list,
+    fill = title
+  )
+) +
+  geom_col(
+    width = 0.65,
+    show.legend = FALSE
+  ) +
+  geom_text(
+    aes(label = weeks_on_list),
+    hjust = -0.3,
+    size = 4.5,
+    fontface = "bold"
+  ) +
+  scale_fill_manual(
+    values = c(
+      "#4472C4",
+      "#70AD47",
+      "#ED7D31",
+      "#8064A2",
+      "#00A6A6"
+    )
+  ) +
+  coord_flip(clip = "off") +
+  scale_y_continuous(
+    breaks = seq(
+      0,
+      max(chart_data$weeks_on_list) + 1,
+      1
+    ),
+    expand = expansion(mult = c(0, 0.15))
+  ) +
+  labs(
+    title = "Weeks on the NYT Bestseller List",
+    subtitle = "Top Five Hardcover Fiction Books",
+    x = NULL,
+    y = "Weeks on List",
+    caption = "Source: New York Times Books API"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    plot.title = element_text(
+      face = "bold",
+      size = 16
+    ),
+    axis.text.y = element_text(
+      size = 11,
+      face = "bold"
+    ),
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank()
+  )
+```
+
+### Interpretation
+
+"Threshing Day" has been on the bestseller list for four weeks.
+
+The other four books in the top five have been on the list for one week each. This shows that a high ranking does not always mean that a book has remained on the list for a long time.
+
+## Ranking Comparison
+
+In this section, I compare each book's current ranking with its ranking from the previous week.
+
+A smaller rank number means a higher position on the bestseller list.
+
+```{r codebase-ranking-comparison}
+ranking_comparison <- books %>%
+  mutate(
+    rank_change = case_when(
+      !is.na(rank_last_week) &
+        rank_last_week > 0 ~ rank_last_week - rank,
+      TRUE ~ NA_integer_
+    ),
+    ranking_status = case_when(
+      is.na(rank_last_week) |
+        rank_last_week == 0 ~ "Not Ranked Last Week",
+      rank_change > 0 ~ "Moved Up",
+      rank_change < 0 ~ "Moved Down",
+      rank_change == 0 ~ "No Change",
+      TRUE ~ "Unknown"
+    )
+  ) %>%
+  select(
+    rank,
+    title,
+    rank_last_week,
+    rank_change,
+    ranking_status
+  ) %>%
+  arrange(rank)
+
+knitr::kable(
+  ranking_comparison,
+  col.names = c(
+    "Current Rank",
+    "Book Title",
+    "Previous Rank",
+    "Rank Change",
+    "Ranking Status"
+  ),
+  caption = "Current and Previous Bestseller Rankings",
+  row.names = FALSE
+)
+```
+
+### Ranking Movement Summary
+
+```{r codebase-ranking-summary}
+ranking_summary <- ranking_comparison %>%
+  count(ranking_status, name = "number_of_books")
+
+knitr::kable(
+  ranking_summary,
+  col.names = c(
+    "Ranking Status",
+    "Number of Books"
+  ),
+  caption = "Summary of Ranking Changes",
+  row.names = FALSE
+)
+```
+
+### Interpretation
+
+This comparison shows which books moved up, moved down, or stayed in the same position.
+
+Books with a previous rank of zero or a missing value are classified as "Not Ranked Last Week." This means they were not ranked on the previous list; it does not necessarily mean they are newly published.
+
+## Results and Discussion
+
+The dataset contains 15 books from the New York Times Hardcover Fiction bestseller list.
+
+I used R to import the JSON data, read the SQLite database, and validate the records.
+
+### Research Question 1: Top Five Books
+
+"Threshing Day" by Rebecca Yarros is ranked number one in the saved dataset.
+
+The other books in the top five are "Miss Wolcott's Ghost," "A Married Little Christmas," "The Family Cross," and "Chain Reaction."
+
+### Research Question 2: Authors
+
+The author analysis shows that Matt Dinniman has two books on the list.
+
+Most other author entries appear once.
+
+### Research Question 3: Weeks on the List
+
+“Threshing Day” has been on the bestseller list for four weeks, while the other four top-ranked books have been on the list for one week each.
+
+This shows that a book can have a high ranking even if it has only been on the list for a short time. Rankings and weeks on the list provide different information about each book.
+
+
+### Additional Analysis: Ranking Changes
+
+The ranking comparison shows that 8 books (53.3%) moved down, 1 book (6.7%) stayed in the same position, and 6 books (40.0%) were not ranked on the previous week’s list.
+
+No books moved up in the rankings.
+
+These results show that bestseller rankings can change from one week to another. However, the analysis is limited to one saved bestseller list and its previous-week ranking information.
+
+### Data Limitations
+
+This project analyzes one saved bestseller list, not multiple weeks of historical data.
+
+The ranking identifies each book's position, but the dataset does not include the number of copies sold.
+
+The results describe the saved sample and should not be interpreted as long-term trends.
+
+## Conclusions
+
+In this project, I used the New York Times Books API to collect and analyze bestseller data.
+
+I worked with JSON files, SQLite databases, and R to organize and validate the information.
+
+I identified the top five books, compared authors, examined weeks on the bestseller list, and reviewed changes in rankings.
+
+This project helped me understand how web APIs can provide real-world data for analysis. I also learned the importance of checking data quality and understanding the limitations of the information.
 
 ## AI Use
 
